@@ -1,0 +1,63 @@
+name: Sync AR BookFinder data
+
+on:
+  schedule:
+    # 09:00 UTC nightly (~1-2am Pacific depending on DST) -- quiet
+    # hours for the app's own users, and spread out rather than
+    # anchored to a round hour.
+    - cron: "7 9 * * *"
+  # Lets you trigger a run on demand from the Actions tab, e.g. right
+  # after adding the SUPABASE_SERVICE_ROLE_KEY secret for the first
+  # time, without waiting for the schedule -- with an optional small
+  # SYNC_LIMIT override for a quick first test.
+  workflow_dispatch:
+    inputs:
+      sync_limit:
+        description: "Max books to look up this run (defaults to 25)"
+        required: false
+        default: "25"
+      debug:
+        description: "Verbose logging (1 = on)"
+        required: false
+        default: "0"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SYNC_LIMIT: ${{ github.event.inputs.sync_limit || '25' }}
+          SYNC_DEBUG: ${{ github.event.inputs.debug || '0' }}
+        run: npm run sync
+
+      # The script itself writes diagnostics/*.png + *.html on the
+      # first not_found or any hard failure in a run (see
+      # saveDiagnostics() in sync-ar-data.mjs) -- uploaded here
+      # whenever that directory has anything in it, whether or not the
+      # job step above reported overall failure (a run can finish
+      # "successfully" while still hitting a broken selector on every
+      # book, which is exactly the case these diagnostics are for).
+      - name: Upload diagnostics (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-diagnostics
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14

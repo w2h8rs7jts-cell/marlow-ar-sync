@@ -1,0 +1,14 @@
+{
+  "name": "marlow-ar-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scheduled job that looks up Accelerated Reader quiz data (AR quiz number, ATOS level, interest level, AR points) on arbookfind.com for books students are reading in Marlow, and writes results into Supabase. Runs on a GitHub Actions schedule so the Marlow app itself never talks to arbookfind.com directly.",
+  "type": "module",
+  "scripts": {
+    "sync": "node scripts/sync-ar-data.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "playwright": "^1.47.2"
+  }
+}
