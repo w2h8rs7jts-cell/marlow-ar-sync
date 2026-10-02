@@ -182,6 +182,30 @@ async function findSearchInput(page) {
   }
 }
 
+async function findSearchButton(page) {
+  const roleButton = page.getByRole("button", { name: /search/i }).first();
+  if ((await roleButton.count().catch(() => 0)) > 0) {
+    return roleButton;
+  }
+
+  try {
+    const candidates = page.locator('button, input[type="submit"], input[type="button"]');
+    const count = await candidates.count();
+    for (let i = 0; i < count; i++) {
+      const el = candidates.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      const value = await el.getAttribute("value").catch(() => null);
+      const text = value ?? (await el.innerText().catch(() => ""));
+      if (/^\s*search\s*$/i.test(text ?? "")) {
+        return el;
+      }
+    }
+  } catch {
+    // fall through to null
+  }
+  return null;
+}
+
 // First-ever visit in a session shows a "Please tell us who you are"
 // interstitial (Student/Parent/Teacher/Librarian radio buttons + a
 // Submit button) before the real Default.aspx content -- confirmed
@@ -276,17 +300,31 @@ async function lookupBook(page, book) {
 
   // This is an ASP.NET WebForms postback page -- pressing Enter only
   // submits if the input happens to sit inside a <form> with exactly
-  // one submit-triggering control, which isn't guaranteed here (the
-  // page also has the separate Keycode "Go" button). Click the
-  // visible "Search" button directly instead, which is what an actual
-  // visitor does; fall back to Enter only if no such button is found.
-  const searchButton = page.getByRole("button", { name: /^search$/i }).first();
-  if ((await searchButton.count()) > 0) {
+  // one text field, which isn't the case here (the whole page is one
+  // <form runat="server">, and there's also the separate Keycode box)
+  // -- confirmed from a real run where Enter left the page completely
+  // unchanged. Click the visible "Search" control directly instead.
+  // `getByRole("button", ...)` alone missed it in that same run,
+  // likely because it's a plain <input type="submit"|"button"> rather
+  // than a real <button> with an accessible name Playwright's role
+  // query picks up -- so fall back to scanning every button-like
+  // element on the page for one whose visible text/value is "Search".
+  const searchButton = await findSearchButton(page);
+  if (searchButton) {
     await searchButton.click();
   } else {
+    console.log(`[sync-ar-data] No "Search" button found for "${book.title}" -- falling back to Enter, which is unlikely to submit this multi-field form.`);
     await searchInput.press("Enter");
   }
   await page.waitForLoadState("networkidle").catch(() => {});
+
+  if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
+    // Still on the homepage after trying to search -- the submit
+    // itself silently failed rather than the search returning zero
+    // results (a real empty result set lands on a results page that
+    // says "0 of 0", not back on the Quick Search tab).
+    console.log(`[sync-ar-data] Search for "${book.title}" didn't navigate away from the Quick Search page -- the submit likely didn't fire.`);
+  }
 
   // First result row's title link -- arbookfind's results list
   // renders each match as a row with the title as a link into the
