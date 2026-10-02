@@ -259,7 +259,22 @@ async function lookupBook(page, book) {
     await dismissCookieBannerIfPresent(page);
   }
 
-  const searchInput = await findSearchInput(page);
+  // Confirmed directly from the live page's markup (via browser
+  // DevTools, since this sandbox can't reach arbookfind.com itself):
+  // the Quick Search box is
+  // <input type="text" id="ctl00_ContentPlaceHolder1_txtKeyWords">
+  // and its Search button is
+  // <input type="submit" id="ctl00_ContentPlaceHolder1_btnDoIt" value="Search">
+  // with no onclick override -- a plain native form submit. Try the
+  // real ID directly first; fall back to the heuristic finder in case
+  // Renaissance ever changes these generated ids.
+  const SEARCH_INPUT_ID = "#ctl00_ContentPlaceHolder1_txtKeyWords";
+  const SEARCH_BUTTON_ID = "#ctl00_ContentPlaceHolder1_btnDoIt";
+
+  let searchInput = page.locator(SEARCH_INPUT_ID).first();
+  if ((await searchInput.count().catch(() => 0)) === 0) {
+    searchInput = await findSearchInput(page);
+  }
   if (!searchInput) {
     // Log what's actually on the page instead of just its byte count
     // -- this prints straight to the job log, which is readable
@@ -299,27 +314,29 @@ async function lookupBook(page, book) {
   await searchInput.click();
   await searchInput.fill(query);
 
-  // Confirmed directly against the live site: pressing Enter in this
-  // box DOES submit the search (the box almost certainly has its own
-  // keydown handler that fires the postback, independent of normal
-  // HTML form-submit behavior) -- a prior guess that it wouldn't
-  // because the page has more than one text field was wrong. Clicking
-  // a located "Search" control was tried first before this and
-  // consistently failed to navigate anywhere even when a matching
-  // element was found, which points at that element being a hidden/
-  // decoy duplicate rather than the one a real click lands on. Enter
-  // first, then the button only as a fallback if Enter somehow didn't
-  // take (e.g. focus got lost).
-  await searchInput.press("Enter");
+  // Every prior attempt (Enter, a heuristically-located button click)
+  // failed to submit at all, on both the search box and a plain
+  // native <input type="submit"> with no onclick override -- while
+  // the exact same searches worked fine manually. That combination
+  // pointed at bot detection rather than a selector problem (see the
+  // User-Agent/navigator.webdriver fix in main()), not at Enter vs.
+  // click being the wrong mechanism. Click the real, confirmed Search
+  // button by its actual id now; Enter is kept only as a fallback.
+  let searchButton = page.locator(SEARCH_BUTTON_ID).first();
+  if ((await searchButton.count().catch(() => 0)) === 0) {
+    searchButton = await findSearchButton(page);
+  }
+  if (searchButton) {
+    await searchButton.click();
+  } else {
+    await searchInput.press("Enter");
+  }
   await page.waitForLoadState("networkidle").catch(() => {});
 
   if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
-    const searchButton = await findSearchButton(page);
-    if (searchButton) {
-      console.log(`[sync-ar-data] Enter didn't navigate for "${book.title}" -- trying the Search button as a fallback.`);
-      await searchButton.click();
-      await page.waitForLoadState("networkidle").catch(() => {});
-    }
+    console.log(`[sync-ar-data] Search button click didn't navigate for "${book.title}" -- trying Enter as a fallback.`);
+    await searchInput.press("Enter");
+    await page.waitForLoadState("networkidle").catch(() => {});
   }
 
   if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
@@ -423,8 +440,29 @@ async function main() {
     return;
   }
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ userAgent: "Mozilla/5.0 (compatible; MarlowARSync/1.0; +https://github.com/w2h8rs7jts-cell/marlow-ar-sync)" });
+  // Every search attempt so far has failed to submit at all (not Enter,
+  // not a direct click on a plain native <input type="submit"> with no
+  // onclick override) despite the exact same searches working fine in
+  // a real browser -- the self-identifying User-Agent below
+  // ("compatible; MarlowARSync/1.0...", which looks exactly like a bot
+  // announcing itself) was the prime suspect, since sites commonly
+  // detect a non-browser UA and quietly serve/behave differently
+  // without any visible error. Using a real browser UA instead, and
+  // masking the most common headless-automation tell
+  // (navigator.webdriver, which Playwright sets true by default and
+  // some anti-bot JS checks for) via --disable-blink-features and an
+  // init script.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  const page = await browser.newPage({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
 
   let matched = 0;
   let notFound = 0;
