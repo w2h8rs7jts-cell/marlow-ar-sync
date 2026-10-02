@@ -30,7 +30,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # @supabase/supabase-js's realtime client requires native
+          # WebSocket support (Node 22+) even though this script never
+          # actually uses realtime -- just importing createClient()
+          # throws on Node 20 otherwise. Bumped from 20 after the
+          # first real run failed with exactly that error.
+          node-version: "22"
 
       - name: Install dependencies
         run: npm install
