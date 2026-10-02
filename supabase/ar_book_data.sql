@@ -61,4 +61,19 @@ create policy "ar_book_data_select_authenticated"
   to authenticated
   using (true);
 
+-- RLS alone isn't enough -- Postgres also requires the base table
+-- grant before a role can touch the table at all (RLS policies only
+-- filter rows once that base grant exists; without it you get a flat
+-- "permission denied for table" error instead of an empty/filtered
+-- result). New projects normally get this for free via Supabase's
+-- default-privilege setup for objects created through the SQL editor,
+-- but that didn't take here, so it's granted explicitly instead of
+-- relying on it again:
+--   - service_role: this job's own key. It already bypasses RLS, but
+--     still needs the base grant to read/write at all.
+--   - authenticated: matches the select policy above, for if/when the
+--     Marlow app itself reads this table directly.
+grant select, insert, update on ar_book_data to service_role;
+grant select on ar_book_data to authenticated;
+
 notify pgrst, 'reload schema';
