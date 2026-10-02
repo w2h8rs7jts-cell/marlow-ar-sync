@@ -314,37 +314,35 @@ async function lookupBook(page, book) {
   await searchInput.click();
   await searchInput.fill(query);
 
-  // Every prior attempt (Enter, a heuristically-located button click)
-  // failed to submit at all, on both the search box and a plain
-  // native <input type="submit"> with no onclick override -- while
-  // the exact same searches worked fine manually. That combination
-  // pointed at bot detection rather than a selector problem (see the
-  // User-Agent/navigator.webdriver fix in main()), not at Enter vs.
-  // click being the wrong mechanism. Click the real, confirmed Search
-  // button by its actual id now; Enter is kept only as a fallback.
-  let searchButton = page.locator(SEARCH_BUTTON_ID).first();
-  if ((await searchButton.count().catch(() => 0)) === 0) {
-    searchButton = await findSearchButton(page);
-  }
-  if (searchButton) {
-    await searchButton.click();
-  } else {
-    await searchInput.press("Enter");
-  }
+  // Confirmed working end-to-end with the real UA/navigator.webdriver
+  // fix in main(): Enter reliably submits the search. (A direct click
+  // on the real Search button, by its confirmed id, still oddly fails
+  // to submit even now -- left in as a fallback below, but Enter is
+  // the one that actually works, so it goes first to avoid a wasted
+  // round trip on every single lookup.)
+  //
+  // Note this site's search is an ASP.NET postback that re-renders
+  // the SAME url (Default.aspx) and keeps the SAME page title on a
+  // successful search -- there's no reliable "did it navigate" signal
+  // to check here. Whether the search actually went through is
+  // visible only in what's checked next: the results links below.
+  await searchInput.press("Enter");
   await page.waitForLoadState("networkidle").catch(() => {});
 
-  if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
-    console.log(`[sync-ar-data] Search button click didn't navigate for "${book.title}" -- trying Enter as a fallback.`);
-    await searchInput.press("Enter");
-    await page.waitForLoadState("networkidle").catch(() => {});
-  }
-
-  if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
-    // Still on the homepage after trying to search -- the submit
-    // itself silently failed rather than the search returning zero
-    // results (a real empty result set lands on a results page that
-    // says "0 of 0", not back on the Quick Search tab).
-    console.log(`[sync-ar-data] Search for "${book.title}" didn't navigate away from the Quick Search page -- the submit likely didn't fire.`);
+  if ((await page.getByRole("link").count().catch(() => 0)) <= 17) {
+    // The homepage itself has ~17 nav/footer links and nothing else;
+    // a real results page adds dozens more (refine-search filters +
+    // one per book). This few links back means Enter likely didn't
+    // submit -- try the confirmed Search button as a fallback.
+    let searchButton = page.locator(SEARCH_BUTTON_ID).first();
+    if ((await searchButton.count().catch(() => 0)) === 0) {
+      searchButton = await findSearchButton(page);
+    }
+    if (searchButton) {
+      console.log(`[sync-ar-data] Enter didn't seem to produce results for "${book.title}" -- trying the Search button as a fallback.`);
+      await searchButton.click();
+      await page.waitForLoadState("networkidle").catch(() => {});
+    }
   }
 
   // First result row's title link -- arbookfind's results list
