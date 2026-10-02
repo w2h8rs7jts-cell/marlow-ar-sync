@@ -121,6 +121,15 @@ async function fetchBooksNeedingLookup(supabase) {
 // "ctl00_ContentPlaceHolder1_txtKeyword") that are brittle to guess
 // and can change between deploys. Role/placeholder-based locators are
 // more resilient to that than a raw CSS id would be.
+//
+// Confirmed against a live screenshot of the real page (2026-10-01):
+// none of these actually match. The Quick Search box on
+// default.aspx is a plain <input> with NO type attribute at all (so
+// `input[type=text]` never matches it) and no placeholder or
+// accessible label (so the role/placeholder candidates miss too).
+// Kept as fast first attempts in case a future page redesign adds
+// one of these, but findSearchInput() always has the width-based
+// fallback below to fall through to.
 const SEARCH_INPUT_CANDIDATES = [
   { role: "textbox", name: /title|keyword|quick search/i },
   { placeholder: /title|keyword|author/i },
@@ -145,7 +154,32 @@ async function findSearchInput(page) {
       // Try the next candidate.
     }
   }
-  return null;
+
+  // Fallback: the page also has a second, narrow "Enter Keycode" text
+  // input in the sidebar, so "just grab the first text input" isn't
+  // safe -- it can land on the wrong box. Instead, collect every
+  // visible plain-text input (explicit type="text"/"search", or no
+  // type attribute at all, which defaults to text) and pick the
+  // widest one: the Quick Search box spans most of the content
+  // column while the keycode box is a few characters wide.
+  try {
+    const plainTextInputs = page.locator('input:not([type]), input[type="text"], input[type="search"]');
+    const count = await plainTextInputs.count();
+    let widest = null;
+    let widestWidth = 0;
+    for (let i = 0; i < count; i++) {
+      const el = plainTextInputs.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      const box = await el.boundingBox().catch(() => null);
+      if (box && box.width > widestWidth) {
+        widestWidth = box.width;
+        widest = el;
+      }
+    }
+    return widest;
+  } catch {
+    return null;
+  }
 }
 
 async function lookupBook(page, book) {
@@ -159,7 +193,19 @@ async function lookupBook(page, book) {
 
   const query = book.author ? `${book.title} ${book.author}` : book.title;
   await searchInput.fill(query);
-  await searchInput.press("Enter");
+
+  // This is an ASP.NET WebForms postback page -- pressing Enter only
+  // submits if the input happens to sit inside a <form> with exactly
+  // one submit-triggering control, which isn't guaranteed here (the
+  // page also has the separate Keycode "Go" button). Click the
+  // visible "Search" button directly instead, which is what an actual
+  // visitor does; fall back to Enter only if no such button is found.
+  const searchButton = page.getByRole("button", { name: /^search$/i }).first();
+  if ((await searchButton.count()) > 0) {
+    await searchButton.click();
+  } else {
+    await searchInput.press("Enter");
+  }
   await page.waitForLoadState("networkidle").catch(() => {});
 
   // First result row's title link -- arbookfind's results list
