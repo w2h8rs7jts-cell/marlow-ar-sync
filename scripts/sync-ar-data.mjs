@@ -182,14 +182,58 @@ async function findSearchInput(page) {
   }
 }
 
+// First-ever visit in a session shows a "Please tell us who you are"
+// interstitial (Student/Parent/Teacher/Librarian radio buttons + a
+// Submit button) before the real Default.aspx content -- confirmed
+// from a live screenshot. It's presumably gated by a cookie/session
+// var that only gets set once that's answered, which is why a script
+// that never answers it can keep landing back on some variant of it
+// instead of ever reaching the search box. Picks "Teacher" somewhat
+// arbitrarily -- the gate doesn't appear to change what's searchable,
+// just which role-specific framing/ads show afterward.
+async function passWelcomeGateIfPresent(page) {
+  const roleRadio = page.getByRole("radio", { name: /teacher|parent|student|librarian/i }).first();
+  const hasRoleGate = (await roleRadio.count().catch(() => 0)) > 0;
+  if (!hasRoleGate) return false;
+
+  try {
+    await roleRadio.check({ force: true });
+    const submitButton = page.getByRole("button", { name: /submit/i }).first();
+    if ((await submitButton.count()) > 0) {
+      await submitButton.click();
+    } else {
+      // Fall back to pressing Enter in case Submit isn't a real
+      // <button>/role=button element on this page.
+      await page.keyboard.press("Enter");
+    }
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function dismissCookieBannerIfPresent(page) {
+  const okButton = page.getByRole("button", { name: /^ok$/i }).first();
+  if ((await okButton.count().catch(() => 0)) > 0) {
+    await okButton.click().catch(() => {});
+  }
+}
+
 async function lookupBook(page, book) {
   await page.goto("https://www.arbookfind.com/Default.aspx", { waitUntil: "domcontentloaded" });
-  // The Quick Search box may be built by client-side JS after
-  // domcontentloaded fires rather than present in the initial HTML --
-  // give it a beat to show up (or at least for the network to go
-  // quiet) before giving up on finding it.
+  // The Quick Search box (or, on a first visit, the welcome gate) may
+  // be built by client-side JS after domcontentloaded fires rather
+  // than present in the initial HTML -- give it a beat to show up (or
+  // at least for the network to go quiet) before looking for either.
   await page.waitForSelector("input", { timeout: 8000 }).catch(() => {});
   await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+
+  await dismissCookieBannerIfPresent(page);
+  const passedGate = await passWelcomeGateIfPresent(page);
+  if (passedGate) {
+    await dismissCookieBannerIfPresent(page);
+  }
 
   const searchInput = await findSearchInput(page);
   if (!searchInput) {
