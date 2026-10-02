@@ -295,6 +295,20 @@ async function lookupBook(page, book) {
   // an auto-generated results grid.
   const firstResultLink = page.getByRole("link", { name: new RegExp(escapeRegExp(book.title.slice(0, 20)), "i") }).first();
   if ((await firstResultLink.count()) === 0) {
+    // Log what links actually exist on the results page -- either the
+    // search genuinely returned nothing, or the results list renders
+    // link text that doesn't contain the book's own title the way
+    // this regex assumes (e.g. truncated, or title+author combined
+    // differently).
+    const allLinkTexts = await page
+      .getByRole("link")
+      .allInnerTexts()
+      .catch(() => []);
+    console.log(`[sync-ar-data] No result link matched "${book.title}" on the results page -- url: ${page.url()}, page title: ${JSON.stringify(await page.title())}, ${allLinkTexts.length} link(s) on page:`);
+    for (const text of allLinkTexts.slice(0, 40)) {
+      const trimmed = text.trim();
+      if (trimmed) console.log(`[sync-ar-data]   link: ${JSON.stringify(trimmed)}`);
+    }
     return { status: "not_found" };
   }
 
@@ -308,7 +322,11 @@ async function lookupBook(page, book) {
   const pointsMatch = bodyText.match(/AR\s*Points:?\s*([\d.]+)/i);
 
   if (!quizMatch) {
-    if (DEBUG) console.log(`[sync-ar-data] Opened a detail page for "${book.title}" but found no AR Quiz No. -- treating as not_found.`);
+    // Log a chunk of the actual detail-page text so a wrong label
+    // format ("Quiz #" vs "Quiz No." etc.) is visible directly in the
+    // job log instead of just being swallowed as not_found.
+    console.log(`[sync-ar-data] Opened a detail page for "${book.title}" but found no AR Quiz No. -- url: ${page.url()}, page title: ${JSON.stringify(await page.title())}`);
+    console.log(`[sync-ar-data]   body text (first 1500 chars): ${JSON.stringify(bodyText.slice(0, 1500))}`);
     return { status: "not_found" };
   }
 
