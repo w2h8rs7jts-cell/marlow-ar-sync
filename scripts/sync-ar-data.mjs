@@ -184,10 +184,46 @@ async function findSearchInput(page) {
 
 async function lookupBook(page, book) {
   await page.goto("https://www.arbookfind.com/Default.aspx", { waitUntil: "domcontentloaded" });
+  // The Quick Search box may be built by client-side JS after
+  // domcontentloaded fires rather than present in the initial HTML --
+  // give it a beat to show up (or at least for the network to go
+  // quiet) before giving up on finding it.
+  await page.waitForSelector("input", { timeout: 8000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
 
   const searchInput = await findSearchInput(page);
   if (!searchInput) {
-    if (DEBUG) console.log(`[sync-ar-data] No search input found for "${book.title}" -- dumping page HTML length: ${(await page.content()).length}`);
+    // Log what's actually on the page instead of just its byte count
+    // -- this prints straight to the job log, which is readable
+    // without downloading the diagnostics artifact. Every <input> on
+    // the page (plus any inside iframes, in case the search form is
+    // embedded) with the attributes/size that would make it match (or
+    // not match) the selectors above.
+    const describeInputs = async (frame, frameLabel) => {
+      try {
+        return await frame.evaluate((label) => {
+          return Array.from(document.querySelectorAll("input")).map((el) => {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return `${label} <input type=${JSON.stringify(el.getAttribute("type"))} id=${JSON.stringify(el.id)} name=${JSON.stringify(el.name)} placeholder=${JSON.stringify(el.placeholder)} w=${Math.round(rect.width)} h=${Math.round(rect.height)} display=${style.display} visibility=${style.visibility}>`;
+          });
+        }, frameLabel);
+      } catch (evalError) {
+        return [`${frameLabel} <failed to inspect: ${evalError.message}>`];
+      }
+    };
+
+    const lines = [];
+    for (const frame of page.frames()) {
+      const label = frame === page.mainFrame() ? "[main]" : `[frame ${frame.url()}]`;
+      lines.push(...(await describeInputs(frame, label)));
+    }
+    console.log(`[sync-ar-data] No search input found for "${book.title}" -- page title: ${JSON.stringify(await page.title())}, url: ${page.url()}, HTML length: ${(await page.content()).length}, ${page.frames().length} frame(s):`);
+    if (lines.length === 0) {
+      console.log("[sync-ar-data]   (no <input> elements found anywhere on the page)");
+    } else {
+      for (const line of lines) console.log(`[sync-ar-data]   ${line}`);
+    }
     return { status: "not_found" };
   }
 
