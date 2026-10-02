@@ -296,27 +296,31 @@ async function lookupBook(page, book) {
   }
 
   const query = book.author ? `${book.title} ${book.author}` : book.title;
+  await searchInput.click();
   await searchInput.fill(query);
 
-  // This is an ASP.NET WebForms postback page -- pressing Enter only
-  // submits if the input happens to sit inside a <form> with exactly
-  // one text field, which isn't the case here (the whole page is one
-  // <form runat="server">, and there's also the separate Keycode box)
-  // -- confirmed from a real run where Enter left the page completely
-  // unchanged. Click the visible "Search" control directly instead.
-  // `getByRole("button", ...)` alone missed it in that same run,
-  // likely because it's a plain <input type="submit"|"button"> rather
-  // than a real <button> with an accessible name Playwright's role
-  // query picks up -- so fall back to scanning every button-like
-  // element on the page for one whose visible text/value is "Search".
-  const searchButton = await findSearchButton(page);
-  if (searchButton) {
-    await searchButton.click();
-  } else {
-    console.log(`[sync-ar-data] No "Search" button found for "${book.title}" -- falling back to Enter, which is unlikely to submit this multi-field form.`);
-    await searchInput.press("Enter");
-  }
+  // Confirmed directly against the live site: pressing Enter in this
+  // box DOES submit the search (the box almost certainly has its own
+  // keydown handler that fires the postback, independent of normal
+  // HTML form-submit behavior) -- a prior guess that it wouldn't
+  // because the page has more than one text field was wrong. Clicking
+  // a located "Search" control was tried first before this and
+  // consistently failed to navigate anywhere even when a matching
+  // element was found, which points at that element being a hidden/
+  // decoy duplicate rather than the one a real click lands on. Enter
+  // first, then the button only as a fallback if Enter somehow didn't
+  // take (e.g. focus got lost).
+  await searchInput.press("Enter");
   await page.waitForLoadState("networkidle").catch(() => {});
+
+  if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
+    const searchButton = await findSearchButton(page);
+    if (searchButton) {
+      console.log(`[sync-ar-data] Enter didn't navigate for "${book.title}" -- trying the Search button as a fallback.`);
+      await searchButton.click();
+      await page.waitForLoadState("networkidle").catch(() => {});
+    }
+  }
 
   if (/Default\.aspx$/i.test(page.url()) && /quick search/i.test(await page.title())) {
     // Still on the homepage after trying to search -- the submit
