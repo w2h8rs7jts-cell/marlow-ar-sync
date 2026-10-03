@@ -2,10 +2,12 @@ name: Sync AR BookFinder data
 
 on:
   schedule:
-    # 09:00 UTC nightly (~1-2am Pacific depending on DST) -- quiet
-    # hours for the app's own users, and spread out rather than
-    # anchored to a round hour.
-    - cron: "7 9 * * *"
+    # Every hour, at :17 rather than the round hour (GitHub throttles/
+    # delays jobs piled up at :00 across every repo on the platform --
+    # same reasoning as the old nightly run's :07 offset, just applied
+    # hourly now per John's 2026-10-02 request for faster turnaround
+    # than once-a-night).
+    - cron: "17 * * * *"
   # Lets you trigger a run on demand from the Actions tab, e.g. right
   # after adding the SUPABASE_SERVICE_ROLE_KEY secret for the first
   # time, without waiting for the schedule -- with an optional small
