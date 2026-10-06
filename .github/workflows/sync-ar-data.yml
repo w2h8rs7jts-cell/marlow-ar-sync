@@ -2,28 +2,24 @@ name: Sync AR BookFinder data
 
 on:
   schedule:
-    # Every 6 hours, at :17 rather than the round hour (GitHub
-    # throttles/delays jobs piled up at :00 across every repo on the
-    # platform -- same reasoning as the old nightly run's :07 offset).
-    # Settled here 2026-10-02 after briefly trying hourly -- faster
-    # turnaround than the old once-a-night run without hitting
-    # arbookfind.com 24x/day for little gain once the backlog's caught
-    # up.
     - cron: "17 */6 * * *"
-  # Lets you trigger a run on demand from the Actions tab, e.g. right
-  # after adding the SUPABASE_SERVICE_ROLE_KEY secret for the first
-  # time, without waiting for the schedule -- with an optional small
-  # SYNC_LIMIT override for a quick first test.
   workflow_dispatch:
     inputs:
       sync_limit:
-        description: "Max books to look up this run (defaults to 25)"
+        description: "Maximum exact book identities (1–25)"
         required: false
         default: "25"
       debug:
-        description: "Verbose logging (1 = on)"
+        description: "Save redacted field-availability diagnostics (1 = on)"
         required: false
         default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ar-book-identity-v2
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -31,42 +27,25 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          # @supabase/supabase-js's realtime client requires native
-          # WebSocket support (Node 22+) even though this script never
-          # actually uses realtime -- just importing createClient()
-          # throws on Node 20 otherwise. Bumped from 20 after the
-          # first real run failed with exactly that error.
           node-version: "22"
-
       - name: Install dependencies
         run: npm install
-
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
-
-      - name: Run sync
+      - name: Run conservative identity sync
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SYNC_LIMIT: ${{ github.event.inputs.sync_limit || '25' }}
           SYNC_DEBUG: ${{ github.event.inputs.debug || '0' }}
         run: npm run sync
-
-      # The script itself writes diagnostics/*.png + *.html on the
-      # first not_found or any hard failure in a run (see
-      # saveDiagnostics() in sync-ar-data.mjs) -- uploaded here
-      # whenever that directory has anything in it, whether or not the
-      # job step above reported overall failure (a run can finish
-      # "successfully" while still hitting a broken selector on every
-      # book, which is exactly the case these diagnostics are for).
-      - name: Upload diagnostics (if any)
+      - name: Upload requested diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sync-diagnostics
           path: diagnostics/
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
