@@ -1,78 +1,86 @@
-# marlow-ar-sync
+# Marlow AR identity sync
 
-A small, standalone job that keeps Accelerated Reader (AR) BookFinder
-data — AR quiz number, ATOS book level, interest level, AR points — in
-sync with the books Marlow students are reading, without the Marlow
-app itself ever talking to arbookfind.com.
+This proposed v2 importer returns **no confirmed AR quiz** when full book
+identity is uncertain. The app continues to read a shared Supabase cache,
+so previously confirmed exact matches do not require browsing at launch.
 
-## Why this is a separate repo
+## Why the change
 
-arbookfind.com has no public API. The only way to get this data is to
-drive their real search form (a headless browser here, via
-[Playwright](https://playwright.dev)), which is inherently fragile —
-it breaks whenever Renaissance changes their page markup, with no
-changelog or warning. Keeping that fragility in its own repo, on its
-own schedule, means it can break, get fixed, or get ripped out
-entirely without ever touching the Marlow app itself. The app only
-ever reads a plain Supabase table (`ar_book_data`) that this job keeps
-filled in.
+The prior importer opened the first result containing the first 20 title
+characters and never checked its author. On October 6 it assigned quiz
+169372 to **Star Wars: A New Hope: Ultimate Fan Edition Little Golden Book
+by Geof Smith**. The official detail identifies 169372 as **LEGO Star Wars:
+A New Hope by Emma Grange**. Search relevance and similar names are not
+book identity.
 
-**Before relying on this long-term:** arbookfind's terms of use aren't
-written with "an automated nightly job" in mind. This is built to be
-as light-touch as something automated can be — small incremental
-batches of new/unmatched books only, polite delays between requests,
-never a full re-crawl (see `MAX_LOOKUPS_PER_RUN` and the staleness
-check in `scripts/sync-ar-data.mjs`) — but that's a mitigation, not a
-guarantee of compliance. Worth treating as a deliberate call, not just
-an engineering default.
+## Conservative contract
 
-## How it works
+- Separate `ar_book_matches_v2` table; old `ar_book_data` rows remain intact.
+- Exact complete title and author, preserving subtitles, punctuation,
+  edition words and digits. Only case and whitespace are normalized.
+- A single official `Last, First` author can match a supplied `First Last`;
+  multi-author lists, missing author and ambiguous names are not guessed.
+- A supplied ISBN must pass its checksum and occur in the actual detail's
+  ISBN table. ISBN-10 and corresponding ISBN-13 are equivalent. Invalid
+  supplied ISBN never falls back to a title-only lookup.
+- Official English Reading Practice details and exactly one accepted
+  quiz are required. Full requested identity, matched title/author/ISBNs,
+  detail URL, language, type, policy and date are retained. Ordinary
+  clients can read only positive cache rows; unverified raw identities
+  remain service-only.
+- Current official Advanced Search fields are used. No title-prefix,
+  first-result, whole-body regex or requested-title fallback.
+- Complete bounded result pagination and all exact-title candidates are
+  inspected. Incomplete or overly broad results defer without adopting a
+  partial match. A successful search without a unique verified identity
+  stores `unverified`, **not** a claim that no quiz exists anywhere.
+- Transport, unknown selectors, invalid details and storage errors preserve
+  prior rows, return a failed Actions run and do not become negative hits.
 
-1. **`supabase/ar_book_data.sql`** — run once, by hand, in the Marlow
-   Supabase project's SQL Editor. Creates `ar_book_data`, keyed by a
-   normalized `title|author` string (not ISBN — nothing in Marlow's
-   `reader_books` table currently captures one). Read-only to the app;
-   only this job's service-role key writes to it.
-2. **`.github/workflows/sync-ar-data.yml`** — runs nightly (09:07 UTC)
-   via GitHub Actions, and can also be triggered manually from the
-   Actions tab (with an optional lower `sync_limit` for a quick test
-   run).
-3. **`scripts/sync-ar-data.mjs`** — pulls distinct title/author pairs
-   from `reader_books` that don't have an `ar_book_data` row yet (or
-   whose `not_found` result is more than 30 days old — a quiz can get
-   added after the first miss), looks each one up on arbookfind, and
-   upserts the result.
+## Coordinated rollout — manual, not applied by Codex
 
-## Setup
+1. Review and run the **new entire** `supabase/ar_book_matches_v2.sql` once
+   in the correct Marlow project. It creates an empty cache and revokes
+   ordinary direct reads of the unsafe v1 cache while preserving all rows
+   and service access. Its pre/postflight refuses unexpected state. Older
+   applications therefore show no AR badge; their Reader work is unchanged.
+   Do not rerun the old baseline SQL or bypass a raised error.
+2. Merge the reviewed importer proposal after the migration. Wait for any
+   already-running v1 sync to finish. Scheduled v2 runs keep the existing
+   six-hour cadence and existing secrets; no new secret is introduced.
+3. Ship the rebuilt Marlow client using the same v2 key/proof contract.
+   Missing schema, unverified data or unknown proof yields no quiz badge.
+4. Deliberately run a small GitHub batch and inspect its official-source
+   evidence before relying on positive matches. Codex has not run the
+   scraper, applied SQL, merged this proposal, or validated live cache rows.
 
-1. Run `supabase/ar_book_data.sql` against the live Marlow Supabase
-   project (SQL Editor), then `notify pgrst, 'reload schema';` (the
-   script already does this at the end of the file).
-2. In this repo's **Settings → Secrets and variables → Actions**, add:
-   - `SUPABASE_URL` — the Marlow project's Supabase URL.
-   - `SUPABASE_SERVICE_ROLE_KEY` — the service-role key (not the anon
-     key — this job needs to write past RLS). Treat this the same as
-     every other service-role key in the main project: never commit
-     it, never log it.
-3. Trigger a manual run from the **Actions** tab with a small
-   `sync_limit` (5 or so) to confirm it actually finds AR data on the
-   live site before letting the nightly schedule take over.
+Legacy wrong matches cannot be certified automatically. This migration
+does not edit students' books, delete cache history or transfer old rows.
 
-## Known gap: this is unverified against the live site
+## Performance and bounds
 
-The search/result selectors in `scripts/sync-ar-data.mjs` were
-written from arbookfind's documented search fields, not confirmed
-against the live rendered page — this sandbox's outbound network
-access doesn't reach arbookfind.com to test against it directly.
-**Expect the first real run to need a selector fix.** The script
-saves a screenshot + the page's HTML to `diagnostics/` on the first
-miss or any hard failure each run, uploaded as a workflow artifact —
-check that before guessing at what broke.
+Cache keys include title, author and canonical ISBN-or-null as a JSON
+tuple; separators in titles cannot collide. Keyset pagination avoids the
+default 1,000-row API ceiling. Existing confirmed identities are rechecked
+after 90 days; `unverified` after 30 days. Each run processes at most 25
+identities, separated by polite delays. The bounded candidate window rotates each six-hour slot to avoid a fixed
+failed prefix blocking later work; changing inventories are not a durable
+fair queue. A single workflow concurrency
+group and original-date conditional updates avoid normal overlapping
+writers; they are not a full transactional source/version lock.
 
-## Not yet done: wiring this into the Marlow app itself
+Admission bounds: 100,000 inventory rows per table, 20,000 distinct valid
+identities, 100 search results / 5 pages, 10 exact-title detail candidates,
+256 publisher ISBN rows / 200 distinct canonical ISBNs, 4 MiB per database
+response, 32 MiB accepted inventory per table, 128 KiB per inventory row,
+30-second database requests, 1,000 UTF-16 characters per title/author. Larger
+or unsupported work defers intact. These are computational limits, not
+measured run time or guarantees of catalog completeness.
 
-This repo only fills in `ar_book_data`. Showing an AR quiz
-badge/level in the Reader UI is separate follow-up work in the main
-StudyBridge/Marlow repo (new query against this table, keyed by the
-same normalized `title|author` the app already has on `reader_books`)
-— not included here.
+This is a source-reviewed proposal. Current official fields were observed
+in a browser on October 6, 2026; the new importer itself has not been run
+against the site or database. Site changes fail closed. Requested diagnostic artifacts contain only bounded
+route/field-availability flags, with no raw entered title/author/ISBN, HTML,
+screenshot, cookie or session URL. Existing package
+versions/install method are preserved in this bounded repair. Read the
+provider's terms separately before continuing automated access at scale.
